@@ -1,4 +1,3 @@
-// SkyBitz / XtraLease legacy XML API with JSON output via getJson=1
 type LatLon = { lat: number; lon: number };
 type Trailer = { id: string; position?: LatLon; lastSeen?: string };
 
@@ -8,12 +7,7 @@ export async function fetchSkybitzPositions(): Promise<Trailer[]> {
   if (!username || !password) return [];
 
   const base = "https://xml.skybitz.com/QueryPositions";
-  const params = new URLSearchParams({
-    version: "2.76",
-    assetid: "ALL",
-    getJson: "1"
-  });
-
+  const params = new URLSearchParams({ version: "2.76", assetid: "ALL", getJson: "1" });
   const url = `${base}?${params.toString()}`;
 
   try {
@@ -25,7 +19,6 @@ export async function fetchSkybitzPositions(): Promise<Trailer[]> {
     });
     if (!resp.ok) return [];
     const data = await resp.json();
-    // Expected shape: positions array. Adjust mapping as needed per tenant.
     const positions = data?.positions ?? data?.PositionList ?? data ?? [];
     const out: Trailer[] = positions.map((p: any) => ({
       id: String(p?.assetid ?? p?.AssetID ?? p?.id ?? crypto.randomUUID()),
@@ -41,7 +34,5 @@ export async function fetchSkybitzPositions(): Promise<Trailer[]> {
         : undefined,
     }));
     return out;
-  } catch (_) {
-    return [];
-  }
+  } catch { return []; }
 }
