@@ -8,12 +8,11 @@ type Truck = { id: string; position?: LatLon; lastSeen?: string };
 type Trailer = { id: string; position?: LatLon; lastSeen?: string };
 type Pair = {
   trailerId: string;
-  truckId: string | null; // null means yard-solo or no truck available
+  truckId: string | null; // null => yard-solo или нет доступных траков
   distanceMiles: number | null;
   trailer: Trailer;
   truck: Truck | null;
 };
-
 
 function extnameLocal(p: string): string {
   const i = p.lastIndexOf(".");
@@ -27,13 +26,11 @@ const YARD_LON = Number(Deno.env.get("YARD_LON") ?? "-88.19651");
 const YARD_RADIUS_MI = Number(Deno.env.get("YARD_RADIUS_MI") ?? "0.5");
 
 async function computeAndPersistPairs() {
-  // Fetch latest positions
   const [trucks, trailers] = await Promise.all([
     fetchSamsaraVehicles(),
     fetchSkybitzPositions(),
   ]);
 
-  // Simple persistence for debugging
   await kv.set(["latest", "trucks"], trucks);
   await kv.set(["latest", "trailers"], trailers);
 
@@ -47,13 +44,19 @@ async function computeAndPersistPairs() {
     pairs,
     updatedAt: new Date().toISOString(),
   });
-  return pairs;
+
+  return pairs as Pair[];
 }
 
-// Scheduled handler for Deno Deploy cron
-self.addEventListener("scheduled", (event: any) => {
-  event.waitUntil(computeAndPersistPairs());
-});
+// Deno Deploy Cron (every 10 minutes)
+try {
+  // Requires Deploy cron enabled in the project UI
+  (Deno as any).cron?.("compute pairs", "*/10 * * * *", async () => {
+    await computeAndPersistPairs();
+  });
+} catch {
+  // ignore if not supported locally
+}
 
 // HTTP server
 serve(async (req) => {
@@ -70,7 +73,6 @@ serve(async (req) => {
   if (pathname === "/api/pairs") {
     const val = await kv.get(["pairs", "current"]);
     if (!val.value) {
-      // Attempt on-demand compute if empty
       await computeAndPersistPairs();
     }
     const latest = await kv.get(["pairs", "current"]);
@@ -79,7 +81,7 @@ serve(async (req) => {
     });
   }
 
-  // Static files
+  // Static files under /static/*
   if (pathname.startsWith("/static/")) {
     const filePath = "." + pathname;
     try {
@@ -89,6 +91,8 @@ serve(async (req) => {
         ? "application/javascript"
         : ext === ".css"
         ? "text/css"
+        : ext === ".html"
+        ? "text/html; charset=utf-8"
         : "application/octet-stream";
       return new Response(file, { headers: { "content-type": type } });
     } catch {
@@ -99,7 +103,9 @@ serve(async (req) => {
   // Root -> index.html
   try {
     const file = await Deno.readFile("./static/index.html");
-    return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
+    return new Response(file, {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
   } catch {
     return new Response("Missing index.html", { status: 500 });
   }
