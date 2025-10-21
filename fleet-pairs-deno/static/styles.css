@@ -2,17 +2,22 @@
 html, body { height: 100%; }
 body {
   margin: 0;
-  overflow: hidden;              /* фикс: страница не скроллится */
+  height: 100%;
+  overflow: hidden;                            /* страница не скроллится */
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, Arial, sans-serif;
   color: #111; background: #0f1114;
 }
-.app { display: grid; grid-template-columns: 360px 1fr; height: 100vh; }
+.app {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  height: 100dvh;                              /* фикс высоты в моб/десктоп */
+}
 .sidebar {
   border-right: 1px solid #1b1f27;
   padding: 16px;
   display: flex; flex-direction: column; gap: 12px;
   background: #0f1114; color: #fff;
-  overflow-y: auto;              /* фикс: скролл только внутри панели */
+  overflow-y: auto;                            /* скролл только в панели */
   position: relative; z-index: 2;
 }
 .sidebar header { display: flex; align-items: center; justify-content: space-between; }
@@ -22,7 +27,7 @@ body {
   border-radius: 12px; font-weight: 600; cursor: pointer;
 }
 .sidebar button:hover { opacity: 0.92; }
-#pairs { list-style: none; margin: 0; padding: 0; flex: 1; display: block; }
+#pairs { list-style: none; margin: 0; padding: 0; flex: 1; }
 .pair {
   padding: 10px 8px; border-radius: 14px; border: 1px solid #232833;
   margin-bottom: 8px; display: grid; grid-template-columns: 1fr auto; gap: 6px;
@@ -30,5 +35,8 @@ body {
 }
 .pair .title { font-weight: 600; color: #e6e9ef; }
 .pair .meta { font-size: 12px; color: #9aa4b2; }
-#map { width: 100%; height: 100%; position: relative; z-index: 1; } /* карта над фоном */
-.marker-label { font-size: 12px; font-weight: 600; }
+#map {
+  width: 100%; height: 100%;
+  position: relative; z-index: 1;
+  pointer-events: auto;                        /* гарантируем интерактивность */
+}
