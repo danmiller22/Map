@@ -3,7 +3,6 @@ import { matchTrailersToNearestTruck } from "./lib/matching.ts";
 import { fetchSamsaraVehicles } from "./lib/samsara.ts";
 import { fetchSkybitzPositions } from "./lib/skybitz.ts";
 
-// ---------- types ----------
 type LatLon = { lat: number; lon: number };
 type Truck = { id: string; position?: LatLon; lastSeen?: string };
 type Trailer = { id: string; position?: LatLon; lastSeen?: string };
@@ -19,7 +18,6 @@ type PairRecord = {
   updatedAt: string;
 };
 
-// ---------- utils ----------
 function extnameLocal(p: string): string {
   const i = p.lastIndexOf(".");
   return i >= 0 ? p.slice(i).toLowerCase() : "";
@@ -29,20 +27,21 @@ function minutesAgo(iso: string) {
   return (Date.now() - new Date(iso).getTime()) / 60000;
 }
 
-// ---------- env / kv ----------
 const kv = await Deno.openKv();
 const YARD_LAT = Number(Deno.env.get("YARD_LAT") ?? "41.43063");
 const YARD_LON = Number(Deno.env.get("YARD_LON") ?? "-88.19651");
 const YARD_RADIUS_MI = Number(Deno.env.get("YARD_RADIUS_MI") ?? "0.5");
-const STALE_MIN = 15; // обновляем если старше 15 минут
+const STALE_MIN = 15;
 
-// ---------- core ----------
 async function computeAndPersistPairs(): Promise<PairRecord> {
   try {
     const [trucks, trailers] = await Promise.all([
       fetchSamsaraVehicles().catch(() => []),
       fetchSkybitzPositions().catch(() => []),
     ]);
+
+    console.log("[pull] samsara trucks:", trucks.length);
+    console.log("[pull] skybitz trailers:", trailers.length);
 
     await kv.set(["latest", "trucks"], trucks);
     await kv.set(["latest", "trailers"], trailers);
@@ -55,9 +54,9 @@ async function computeAndPersistPairs(): Promise<PairRecord> {
 
     const rec: PairRecord = { pairs, updatedAt: nowISO() };
     await kv.set(["pairs", "current"], rec);
+    console.log("[pairs] built:", pairs.length);
     return rec;
-  } catch (_e) {
-    // не падаем, возвращаем что есть
+  } catch {
     const existing = await kv.get<PairRecord>(["pairs", "current"]);
     if (existing.value) return existing.value;
     const rec: PairRecord = { pairs: [], updatedAt: nowISO() };
@@ -66,21 +65,69 @@ async function computeAndPersistPairs(): Promise<PairRecord> {
   }
 }
 
-// первичный прогрев при старте деплоя
 try { await computeAndPersistPairs(); } catch {}
 
-// Deploy Cron (каждые 10 минут)
 try {
   (Deno as any).cron?.("compute pairs", "*/10 * * * *", async () => {
     await computeAndPersistPairs();
   });
 } catch {}
 
-// Локальный таймер как страховка, если cron недоступен
 setInterval(() => { computeAndPersistPairs(); }, STALE_MIN * 60 * 1000);
 
-// ---------- minimal inline UI (fallback) ----------
-const FALLBACK_HTML = `<!doctype html><html><head>
+// ---------- HTTP ----------
+serve(async (req) => {
+  const url = new URL(req.url);
+  const pathname = url.pathname;
+
+  if (pathname === "/api/health") {
+    const pairs = (await kv.get<PairRecord>(["pairs", "current"])).value;
+    const trucks = (await kv.get<Truck[]>(["latest", "trucks"])).value ?? [];
+    const trailers = (await kv.get<Trailer[]>(["latest", "trailers"])).value ?? [];
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        havePairs: !!pairs,
+        updatedAt: pairs?.updatedAt ?? null,
+        counts: { trucks: trucks.length, trailers: trailers.length, pairs: pairs?.pairs?.length ?? 0 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }
+
+  if (pathname === "/api/pairs") {
+    let rec = (await kv.get<PairRecord>(["pairs", "current"])).value;
+    if (!rec || minutesAgo(rec.updatedAt) > STALE_MIN) {
+      computeAndPersistPairs();
+      if (!rec) rec = { pairs: [], updatedAt: nowISO() };
+    }
+    return new Response(JSON.stringify(rec), { headers: { "content-type": "application/json" } });
+  }
+
+  if (pathname.startsWith("/static/")) {
+    const fp = "." + pathname;
+    try {
+      const file = await Deno.readFile(fp);
+      const ext = extnameLocal(fp);
+      const type = ext === ".js"
+        ? "application/javascript"
+        : ext === ".css"
+        ? "text/css"
+        : ext === ".html"
+        ? "text/html; charset=utf-8"
+        : "application/octet-stream";
+      return new Response(file, { headers: { "content-type": type } });
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
+  }
+
+  try {
+    const file = await Deno.readFile("./static/index.html");
+    return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
+  } catch {
+    // инлайн fallback UI
+    const FALLBACK_HTML = `<!doctype html><html><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Fleet Pairs</title>
 <link href="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.css" rel="stylesheet"/>
@@ -151,55 +198,6 @@ function setOrUpdateLine(id,data){
 }
 setInterval(refresh,90000);
 </script></body></html>`;
-
-// ---------- HTTP ----------
-serve(async (req) => {
-  const url = new URL(req.url);
-  const pathname = url.pathname;
-
-  if (pathname === "/api/health") {
-    const val = await kv.get<PairRecord>(["pairs", "current"]);
-    return new Response(
-      JSON.stringify({ ok: true, havePairs: !!val.value, updatedAt: val.value?.updatedAt ?? null }),
-      { headers: { "content-type": "application/json" } },
-    );
-  }
-
-  if (pathname === "/api/pairs") {
-    // отдаём текущие, при необходимости фоново обновляем
-    let rec = (await kv.get<PairRecord>(["pairs", "current"])).value;
-    if (!rec || minutesAgo(rec.updatedAt) > STALE_MIN) {
-      // обновление в фоне, чтобы не блокировать ответ
-      computeAndPersistPairs();
-      if (!rec) rec = { pairs: [], updatedAt: nowISO() };
-    }
-    return new Response(JSON.stringify(rec), { headers: { "content-type": "application/json" } });
-  }
-
-  // статика
-  if (pathname.startsWith("/static/")) {
-    const fp = "." + pathname;
-    try {
-      const file = await Deno.readFile(fp);
-      const ext = extnameLocal(fp);
-      const type = ext === ".js"
-        ? "application/javascript"
-        : ext === ".css"
-        ? "text/css"
-        : ext === ".html"
-        ? "text/html; charset=utf-8"
-        : "application/octet-stream";
-      return new Response(file, { headers: { "content-type": type } });
-    } catch {
-      return new Response("Not found", { status: 404 });
-    }
-  }
-
-  // корень: пробуем файл, иначе инлайн UI
-  try {
-    const file = await Deno.readFile("./static/index.html");
-    return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
-  } catch {
     return new Response(FALLBACK_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 });
