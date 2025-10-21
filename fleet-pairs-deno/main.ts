@@ -3,44 +3,83 @@ import { matchTrailersToNearestTruck } from "./lib/matching.ts";
 import { fetchSamsaraVehicles } from "./lib/samsara.ts";
 import { fetchSkybitzPositions } from "./lib/skybitz.ts";
 
+// ---------- types ----------
 type LatLon = { lat: number; lon: number };
 type Truck = { id: string; position?: LatLon; lastSeen?: string };
 type Trailer = { id: string; position?: LatLon; lastSeen?: string };
+type PairRecord = {
+  pairs: Array<{
+    trailerId: string;
+    truckId: string | null;
+    distanceMiles: number | null;
+    trailer: Trailer;
+    truck: Truck | null;
+    status?: string;
+  }>;
+  updatedAt: string;
+};
 
+// ---------- utils ----------
 function extnameLocal(p: string): string {
   const i = p.lastIndexOf(".");
   return i >= 0 ? p.slice(i).toLowerCase() : "";
 }
+function nowISO() { return new Date().toISOString(); }
+function minutesAgo(iso: string) {
+  return (Date.now() - new Date(iso).getTime()) / 60000;
+}
 
+// ---------- env / kv ----------
 const kv = await Deno.openKv();
-
 const YARD_LAT = Number(Deno.env.get("YARD_LAT") ?? "41.43063");
 const YARD_LON = Number(Deno.env.get("YARD_LON") ?? "-88.19651");
 const YARD_RADIUS_MI = Number(Deno.env.get("YARD_RADIUS_MI") ?? "0.5");
+const STALE_MIN = 15; // обновляем если старше 15 минут
 
-async function computeAndPersistPairs() {
-  const [trucks, trailers] = await Promise.all([
-    fetchSamsaraVehicles(),
-    fetchSkybitzPositions(),
-  ]);
-  await kv.set(["latest", "trucks"], trucks);
-  await kv.set(["latest", "trailers"], trailers);
-  const pairs = matchTrailersToNearestTruck({
-    trucks,
-    trailers,
-    yard: { lat: YARD_LAT, lon: YARD_LON, radiusMi: YARD_RADIUS_MI },
-  });
-  await kv.set(["pairs", "current"], { pairs, updatedAt: new Date().toISOString() });
-  return pairs;
+// ---------- core ----------
+async function computeAndPersistPairs(): Promise<PairRecord> {
+  try {
+    const [trucks, trailers] = await Promise.all([
+      fetchSamsaraVehicles().catch(() => []),
+      fetchSkybitzPositions().catch(() => []),
+    ]);
+
+    await kv.set(["latest", "trucks"], trucks);
+    await kv.set(["latest", "trailers"], trailers);
+
+    const pairs = matchTrailersToNearestTruck({
+      trucks,
+      trailers,
+      yard: { lat: YARD_LAT, lon: YARD_LON, radiusMi: YARD_RADIUS_MI },
+    });
+
+    const rec: PairRecord = { pairs, updatedAt: nowISO() };
+    await kv.set(["pairs", "current"], rec);
+    return rec;
+  } catch (_e) {
+    // не падаем, возвращаем что есть
+    const existing = await kv.get<PairRecord>(["pairs", "current"]);
+    if (existing.value) return existing.value;
+    const rec: PairRecord = { pairs: [], updatedAt: nowISO() };
+    await kv.set(["pairs", "current"], rec);
+    return rec;
+  }
 }
 
-// Deploy cron
+// первичный прогрев при старте деплоя
+try { await computeAndPersistPairs(); } catch {}
+
+// Deploy Cron (каждые 10 минут)
 try {
   (Deno as any).cron?.("compute pairs", "*/10 * * * *", async () => {
     await computeAndPersistPairs();
   });
 } catch {}
 
+// Локальный таймер как страховка, если cron недоступен
+setInterval(() => { computeAndPersistPairs(); }, STALE_MIN * 60 * 1000);
+
+// ---------- minimal inline UI (fallback) ----------
 const FALLBACK_HTML = `<!doctype html><html><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Fleet Pairs</title>
@@ -48,23 +87,20 @@ const FALLBACK_HTML = `<!doctype html><html><head>
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Inter,Arial,sans-serif}
 .app{display:grid;grid-template-columns:360px 1fr;height:100vh}
-.sidebar{border-right:1px solid #eee;padding:16px;display:flex;gap:12px;flex-direction:column}
-.sidebar header{display:flex;justify-content:space-between;align-items:center}
-.sidebar h1{margin:0;font-size:18px;font-weight:600}
-.sidebar button{background:#111;color:#fff;border:0;padding:8px 12px;border-radius:12px;font-weight:600;cursor:pointer}
+.sidebar{border-right:1px solid #eee;padding:16px;display:flex;gap:12px;flex-direction:column;background:#0f1114;color:#fff}
+.sidebar button{background:#fff;color:#111;border:0;padding:8px 12px;border-radius:12px;font-weight:600;cursor:pointer}
 #pairs{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
-.pair{padding:10px 8px;border-radius:14px;border:1px solid #f0f0f0;margin-bottom:8px;display:grid;grid-template-columns:1fr auto;gap:6px}
-.pair .title{font-weight:600}.pair .meta{font-size:12px;color:#555}#map{width:100%;height:100%}
+.pair{padding:10px 8px;border-radius:14px;border:1px solid #2a2d33;margin-bottom:8px;display:grid;grid-template-columns:1fr auto;gap:6px;background:#15181d}
+.pair .title{font-weight:600}.pair .meta{font-size:12px;opacity:.7}#map{width:100%;height:100%}
 </style></head><body>
-<div class="app"><aside class="sidebar"><header><h1>Pairs</h1><button id="refresh">Refresh</button></header><ul id="pairs"></ul></aside><main id="map"></main></div>
+<div class="app"><aside class="sidebar"><div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Pairs</h2><button id="refresh">Refresh</button></div><ul id="pairs"></ul></aside><main id="map"></main></div>
 <script src="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.js"></script>
 <script>
 const map=new maplibregl.Map({container:'map',style:'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',center:[-88.19651,41.43063],zoom:8});
 const triangleSVG=encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><polygon points="12,3 21,21 3,21"/></svg>');
 const squareSVG=encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect x="3" y="3" width="18" height="18"/></svg>');
-map.on('load',async()=>{map.loadImage('data:image/svg+xml;utf8,'+triangleSVG,(e,i)=>{if(!e&&!map.hasImage('truck'))map.addImage('truck',i)});map.loadImage('data:image/svg+xml;utf8,'+squareSVG,(e,i)=>{if(!e&&!map.hasImage('trailer'))map.addImage('trailer',i)});await refresh();});
+map.on('load',()=>{map.loadImage('data:image/svg+xml;utf8,'+triangleSVG,(e,i)=>{if(!e&&!map.hasImage('truck'))map.addImage('truck',i)});map.loadImage('data:image/svg+xml;utf8,'+squareSVG,(e,i)=>{if(!e&&!map.hasImage('trailer'))map.addImage('trailer',i)}); refresh();});
 document.getElementById('refresh').addEventListener('click',refresh);
-
 async function refresh(){
   const r=await fetch('/api/pairs'); const d=await r.json(); const pairs=d&&d.pairs?d.pairs:[];
   const trucks=[],trailers=[],lines=[];
@@ -83,7 +119,6 @@ async function refresh(){
   setOrUpdate('trucks',{type:'FeatureCollection',features:trucks},'truck');
   setOrUpdate('trailers',{type:'FeatureCollection',features:trailers},'trailer');
   setOrUpdateLine('pair-lines',{type:'FeatureCollection',features:lines});
-
   const list=document.getElementById('pairs'); list.innerHTML='';
   for(const p of pairs){
     const li=document.createElement('li'); li.className='pair';
@@ -100,7 +135,6 @@ async function refresh(){
     list.appendChild(li);
   }
 }
-
 function setOrUpdate(id,data,img){
   if(map.getSource(id)){ map.getSource(id).setData(data); }
   else{
@@ -118,35 +152,42 @@ function setOrUpdateLine(id,data){
 setInterval(refresh,90000);
 </script></body></html>`;
 
-// HTTP
+// ---------- HTTP ----------
 serve(async (req) => {
   const url = new URL(req.url);
   const pathname = url.pathname;
 
   if (pathname === "/api/health") {
-    const val = await kv.get(["pairs", "current"]);
-    return new Response(JSON.stringify({ ok: true, havePairs: !!val.value }), {
-      headers: { "content-type": "application/json" },
-    });
+    const val = await kv.get<PairRecord>(["pairs", "current"]);
+    return new Response(
+      JSON.stringify({ ok: true, havePairs: !!val.value, updatedAt: val.value?.updatedAt ?? null }),
+      { headers: { "content-type": "application/json" } },
+    );
   }
 
   if (pathname === "/api/pairs") {
-    const val = await kv.get(["pairs", "current"]);
-    if (!val.value) await computeAndPersistPairs();
-    const latest = await kv.get(["pairs", "current"]);
-    return new Response(JSON.stringify(latest.value ?? {}), {
-      headers: { "content-type": "application/json" },
-    });
+    // отдаём текущие, при необходимости фоново обновляем
+    let rec = (await kv.get<PairRecord>(["pairs", "current"])).value;
+    if (!rec || minutesAgo(rec.updatedAt) > STALE_MIN) {
+      // обновление в фоне, чтобы не блокировать ответ
+      computeAndPersistPairs();
+      if (!rec) rec = { pairs: [], updatedAt: nowISO() };
+    }
+    return new Response(JSON.stringify(rec), { headers: { "content-type": "application/json" } });
   }
 
+  // статика
   if (pathname.startsWith("/static/")) {
     const fp = "." + pathname;
     try {
       const file = await Deno.readFile(fp);
       const ext = extnameLocal(fp);
-      const type = ext === ".js" ? "application/javascript"
-        : ext === ".css" ? "text/css"
-        : ext === ".html" ? "text/html; charset=utf-8"
+      const type = ext === ".js"
+        ? "application/javascript"
+        : ext === ".css"
+        ? "text/css"
+        : ext === ".html"
+        ? "text/html; charset=utf-8"
         : "application/octet-stream";
       return new Response(file, { headers: { "content-type": type } });
     } catch {
@@ -154,19 +195,7 @@ serve(async (req) => {
     }
   }
 
-  if (pathname === "/debug/ls") {
-    const cwd = Deno.cwd();
-    const list = async (p: string) => {
-      try { const arr: string[] = []; for await (const e of Deno.readDir(p)) arr.push((e.isDirectory?"[D] ":"[F] ")+e.name); return arr; }
-      catch { return ["<unreadable>"]; }
-    };
-    const root = await list(".");
-    const staticDir = await list("./static");
-    return new Response(JSON.stringify({ cwd, root, staticDir }, null, 2), {
-      headers: { "content-type": "application/json" },
-    });
-  }
-
+  // корень: пробуем файл, иначе инлайн UI
   try {
     const file = await Deno.readFile("./static/index.html");
     return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
