@@ -6,30 +6,39 @@ const map = new maplibregl.Map({
 });
 map.dragPan.enable(); map.scrollZoom.enable(); map.keyboard.enable(); map.doubleClickZoom.enable();
 
-// SVG для маркеров
-const SVG_TRUCK = `
-<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 28 28">
-  <polygon points="14,3 25,25 3,25" fill="#111" stroke="#fff" stroke-width="2"/>
-</svg>`;
-const SVG_TRAILER = `
-<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24">
-  <rect x="3" y="3" width="18" height="18" fill="#111" stroke="#fff" stroke-width="2"/>
-</svg>`;
+// контрастные SVG
+const triangleSVG = `data:image/svg+xml;utf8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 28 28">
+     <polygon points="14,3 25,25 3,25" fill="#111" stroke="#fff" stroke-width="2"/>
+   </svg>`)}`
+const squareSVG = `data:image/svg+xml;utf8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
+     <rect x="3" y="3" width="18" height="18" fill="#111" stroke="#fff" stroke-width="2"/>
+   </svg>`)}`
 
-// пул маркеров
-let truckMarkers = [];
-let trailerMarkers = [];
+async function ensureIcons() {
+  await new Promise((res, rej) => {
+    if (map.hasImage('truck')) return res(true);
+    map.loadImage(triangleSVG, (e, img) => { if (e) return rej(e); map.addImage('truck', img); res(true); });
+  });
+  await new Promise((res, rej) => {
+    if (map.hasImage('trailer')) return res(true);
+    map.loadImage(squareSVG, (e, img) => { if (e) return rej(e); map.addImage('trailer', img); res(true); });
+  });
+}
 
-map.on('load', async () => { await refresh(); });
+map.on('load', async () => {
+  await ensureIcons();
+  await refresh();
+});
 document.getElementById('refresh').addEventListener('click', refresh);
 
 async function refresh() {
-  const res = await fetch('/api/pairs', { cache: 'no-store' });
-  const data = await res.json();
-  const pairs = data?.pairs ?? [];
+  const r = await fetch('/api/pairs', { cache: 'no-store' });
+  const d = await r.json();
+  const pairs = d?.pairs ?? [];
 
-  // подготовим гео
-  const lines = [], labelsTk = [], labelsTr = [], tPts = [], trPts = [];
+  const trucksPts = [], trailersPts = [], lines = [], labelsTk = [], labelsTr = [];
   for (const p of pairs) {
     const tr = p.trailer, tk = p.truck;
     const trId = String(p.trailerId ?? tr?.id ?? '');
@@ -37,61 +46,57 @@ async function refresh() {
 
     if (tr?.position) {
       const c = [tr.position.lon, tr.position.lat];
-      trPts.push(c);
-      labelsTr.push(point(c, { label: `TR ${trId}` }));
+      trailersPts.push(point(c)); labelsTr.push(point(c, { label: `TR ${trId}` }));
     }
     if (tk?.position) {
       const c = [tk.position.lon, tk.position.lat];
-      tPts.push(c);
-      labelsTk.push(point(c, { label: `TK ${tkId ?? ''}` }));
+      trucksPts.push(point(c)); labelsTk.push(point(c, { label: `TK ${tkId ?? ''}` }));
       if (tr?.position) lines.push(line([c, [tr.position.lon, tr.position.lat]]));
     }
   }
 
-  // линии + подписи (оставляем слоями)
   setOrUpdateGeo('pair-lines', coll(lines));
-  addOrUpdateLayer('pair-lines-layer', { type: 'line', source: 'pair-lines', paint: { 'line-width': 2 }});
-
+  setOrUpdateGeo('trucks-pts', coll(trucksPts));
+  setOrUpdateGeo('trailers-pts', coll(trailersPts));
   setOrUpdateGeo('trucks-labels', coll(labelsTk));
   setOrUpdateGeo('trailers-labels', coll(labelsTr));
-  addOrUpdateLayer('trucks-labels-layer', { type: 'symbol', source: 'trucks-labels',
-    layout: { 'text-field': ['get','label'], 'text-offset': [0, 1.2], 'text-size': 12, 'text-anchor': 'top',
-              'text-allow-overlap': true, 'text-ignore-placement': true }});
-  addOrUpdateLayer('trailers-labels-layer', { type: 'symbol', source: 'trailers-labels',
-    layout: { 'text-field': ['get','label'], 'text-offset': [0, 1.2], 'text-size': 12, 'text-anchor': 'top',
-              'text-allow-overlap': true, 'text-ignore-placement': true }});
 
-  // иконки рисуем HTML-маркерами (железно видно)
-  renderMarkers(truckMarkers, tPts, SVG_TRUCK);
-  renderMarkers(trailerMarkers, trPts, SVG_TRAILER);
+  addOrUpdateLayer('pair-lines-layer', { type: 'line', source: 'pair-lines', paint: { 'line-width': 2 }});
+
+  addOrUpdateLayer('trucks-pts-layer', {
+    type: 'symbol', source: 'trucks-pts',
+    layout: {
+      'icon-image': 'truck', 'icon-size': 1.8,
+      'icon-allow-overlap': true, 'icon-ignore-placement': true
+    }
+  });
+  addOrUpdateLayer('trailers-pts-layer', {
+    type: 'symbol', source: 'trailers-pts',
+    layout: {
+      'icon-image': 'trailer', 'icon-size': 1.8,
+      'icon-allow-overlap': true, 'icon-ignore-placement': true
+    }
+  });
+
+  addOrUpdateLayer('trucks-labels-layer', {
+    type: 'symbol', source: 'trucks-labels',
+    layout: {
+      'text-field': ['get','label'], 'text-offset': [0, 1.2], 'text-size': 12, 'text-anchor': 'top',
+      'text-allow-overlap': true, 'text-ignore-placement': true
+    }
+  });
+  addOrUpdateLayer('trailers-labels-layer', {
+    type: 'symbol', source: 'trailers-labels',
+    layout: {
+      'text-field': ['get','label'], 'text-offset': [0, 1.2], 'text-size': 12, 'text-anchor': 'top',
+      'text-allow-overlap': true, 'text-ignore-placement': true
+    }
+  });
 
   renderList(pairs);
 }
 
-// ——— маркеры как DOM ———
-function renderMarkers(pool, coordsList, svg) {
-  // убрать старые
-  for (const m of pool) m.remove();
-  pool.length = 0;
-
-  for (const c of coordsList) {
-    const el = document.createElement('div');
-    el.style.width = '30px';
-    el.style.height = '30px';
-    // ВАЖНО: НЕ делаем translate(-50%,-50%) — MapLibre уже центрирует маркер
-    el.style.pointerEvents = 'none';
-    el.style.zIndex = '2';
-    el.innerHTML = svg;
-
-    const mk = new maplibregl.Marker({ element: el, anchor: 'center' })
-      .setLngLat(c)
-      .addTo(map);
-    pool.push(mk);
-  }
-}
-
-
-// ——— список ———
+// UI списка
 function renderList(pairs) {
   const list = document.getElementById('pairs');
   list.innerHTML = '';
@@ -108,13 +113,16 @@ function renderList(pairs) {
   }
 }
 
-// ——— geojson helpers/layers ———
+// GeoJSON / слои
 function point(c, p){ return {type:'Feature',geometry:{type:'Point',coordinates:c},properties:p||{}} }
 function line(c){ return {type:'Feature',geometry:{type:'LineString',coordinates:c},properties:{}} }
 function coll(f){ return {type:'FeatureCollection',features:f} }
 function setOrUpdateGeo(id, data){ if (map.getSource(id)) map.getSource(id).setData(data); else map.addSource(id, { type:'geojson', data }); }
 function addOrUpdateLayer(id, def){
-  if (map.getLayer(id)) { if (def.layout) for (const k in def.layout) map.setLayoutProperty(id, k, def.layout[k]);
-                          if (def.paint)  for (const k in def.paint)  map.setPaintProperty(id, k, def.paint[k]); return; }
-  map.addLayer(Object.assign({ id }, def));
+  if (map.getLayer(id)) {
+    if (def.layout) for (const k in def.layout) map.setLayoutProperty(id, k, def.layout[k]);
+    if (def.paint)  for (const k in def.paint)  map.setPaintProperty(id, k, def.paint[k]);
+  } else {
+    map.addLayer(Object.assign({ id }, def));
+  }
 }
