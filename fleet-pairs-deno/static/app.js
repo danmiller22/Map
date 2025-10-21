@@ -1,14 +1,16 @@
 const map = new maplibregl.Map({
   container: 'map',
-  style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+  style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json', // читаемая база
   center: [-88.19651, 41.43063],
-  zoom: 8,
-  dragPan: true, scrollZoom: true, keyboard: true, doubleClickZoom: true
+  zoom: 8
 });
 
+// на всякий случай явно включим взаимодействия
+map.dragPan.enable(); map.scrollZoom.enable(); map.boxZoom.enable(); map.keyboard.enable(); map.doubleClickZoom.enable();
+
 // SVG иконки
-const triangleSVG = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><polygon points="12,3 21,21 3,21" /></svg>`);
-const squareSVG   = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect x="3" y="3" width="18" height="18" /></svg>`);
+const triangleSVG = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26"><polygon points="13,3 23,23 3,23"/></svg>`);
+const squareSVG   = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22"><rect x="3" y="3" width="16" height="16"/></svg>`);
 
 map.on('load', async () => {
   map.loadImage(`data:image/svg+xml;utf8,${triangleSVG}`, (err, img) => { if (!err && !map.hasImage('truck')) map.addImage('truck', img); });
@@ -29,15 +31,22 @@ async function refresh() {
 
   for (const p of pairs) {
     const tr = p.trailer;
+    const truck = p.truck;
+    // принудительно строки для подписей и списка
+    const trId = String(p.trailerId ?? tr?.id ?? '');
+    const tkId = p.truckId != null ? String(p.truckId) : null;
+
     if (tr?.position) {
-      trailers.push(fcPoint([tr.position.lon, tr.position.lat], { id: tr.id, label: `TR ${tr.id}` }));
+      trailers.push(fcPoint([tr.position.lon, tr.position.lat], { id: trId, label: `TR ${trId}` }));
     }
-    if (p.truck?.position) {
-      trucks.push(fcPoint([p.truck.position.lon, p.truck.position.lat], { id: p.truck.id, label: `TK ${p.truck.id}` }));
+    if (truck?.position) {
+      trucks.push(fcPoint([truck.position.lon, truck.position.lat], { id: tkId ?? '', label: `TK ${tkId ?? ''}` }));
       if (tr?.position) {
-        lines.push(fcLine([[p.truck.position.lon, p.truck.position.lat],[tr.position.lon, tr.position.lat]], { id: `${tr.id}-${p.truck.id}`, distance: p.distanceMiles }));
+        lines.push(fcLine([[truck.position.lon, truck.position.lat],[tr.position.lon, tr.position.lat]], { id: `${trId}-${tkId ?? ''}`, distance: p.distanceMiles }));
       }
     }
+    // перезаписываем в объект для корректного списка
+    p._trId = trId; p._tkId = tkId;
   }
 
   setOrUpdate('trucks', coll(trucks), 'truck');
@@ -46,13 +55,10 @@ async function refresh() {
 
   renderList(pairs);
 
-  // авто-фит если есть пары
-  if (pairs.length && pairs[0].truck?.position && pairs[0].trailer?.position) {
+  // авто-фит
+  if (lines.length) {
     const b = new maplibregl.LngLatBounds();
-    for (const p of pairs) {
-      if (p.truck?.position) b.extend([p.truck.position.lon, p.truck.position.lat]);
-      if (p.trailer?.position) b.extend([p.trailer.position.lon, p.trailer.position.lat]);
-    }
+    for (const f of lines) f.geometry.coordinates.forEach(c => b.extend(c));
     map.fitBounds(b, { padding: 60, maxZoom: 9 });
   }
 }
@@ -63,7 +69,7 @@ function renderList(pairs) {
   if (!pairs.length) {
     const li = document.createElement('li');
     li.className = 'pair';
-    li.innerHTML = `<div class="title">Нет данных для пар</div><div class="meta">Проверьте /api/health</div>`;
+    li.innerHTML = `<div class="title">Нет данных</div><div class="meta">Проверьте /api/health</div>`;
     list.appendChild(li);
     return;
   }
@@ -72,7 +78,7 @@ function renderList(pairs) {
     li.className = 'pair';
     const title = document.createElement('div');
     title.className = 'title';
-    title.textContent = p.truck ? `Trailer ${p.trailerId} ▸ Truck ${p.truckId}` : `Trailer ${p.trailerId} ▸ ${p.status || 'no_truck_available'}`;
+    title.textContent = p.truck ? `Trailer ${p._trId}  ▸  Truck ${p._tkId}` : `Trailer ${p._trId}  ▸  ${p.status || 'no_truck_available'}`;
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = p.distanceMiles != null ? `${p.distanceMiles} mi` : '';
@@ -91,19 +97,18 @@ function renderList(pairs) {
   }
 }
 
-// GeoJSON helpers
+// helpers
 function fcPoint(coords, props) { return { type: 'Feature', geometry: { type: 'Point', coordinates: coords }, properties: props || {} }; }
 function fcLine(coords, props)  { return { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: props || {} }; }
 function coll(features) { return { type: 'FeatureCollection', features }; }
 
-// map layer helpers
 function setOrUpdate(id, data, imageName) {
   if (map.getSource(id)) { map.getSource(id).setData(data); }
   else {
     map.addSource(id, { type: 'geojson', data });
     map.addLayer({ id, type: 'symbol', source: id, layout: {
-      'icon-image': imageName, 'icon-size': 1, 'icon-allow-overlap': true,
-      'text-field': ['get', 'label'], 'text-offset': [0, 1.2], 'text-size': 10, 'text-anchor': 'top'
+      'icon-image': imageName, 'icon-size': 1.1, 'icon-allow-overlap': true,
+      'text-field': ['get', 'label'], 'text-offset': [0, 1.2], 'text-size': 11, 'text-anchor': 'top'
     }});
   }
 }
@@ -115,5 +120,4 @@ function setOrUpdateLine(id, data) {
   }
 }
 
-// авто-рефреш
 setInterval(refresh, 90000);
