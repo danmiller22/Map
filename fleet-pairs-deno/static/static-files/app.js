@@ -4,142 +4,106 @@ const map = new maplibregl.Map({
   center: [-88.19651, 41.43063],
   zoom: 8
 });
+map.dragPan.enable(); map.scrollZoom.enable(); map.keyboard.enable(); map.doubleClickZoom.enable();
 
-// SVG icons as data URLs
-const triangleSVG = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
-  <polygon points="12,3 21,21 3,21" fill="black"/></svg>`);
-const squareSVG = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
-  <rect x="3" y="3" width="18" height="18" fill="black"/></svg>`);
+// ====== CANVAS-иконки: треугольник (truck) и квадрат (trailer) ======
+function makeTriangle(size=40) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff'; ctx.fillStyle = '#111111';
+  ctx.beginPath();
+  ctx.moveTo(size/2, 3);
+  ctx.lineTo(size-3, size-3);
+  ctx.lineTo(3, size-3);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  return c;
+}
+function makeSquare(size=36) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff'; ctx.fillStyle = '#111111';
+  ctx.beginPath();
+  ctx.rect(3,3,size-6,size-6);
+  ctx.fill(); ctx.stroke();
+  return c;
+}
 
-map.on('load', async () => {
-  map.loadImage(`data:image/svg+xml;utf8,${triangleSVG}`, (err, img) => {
-    if (!err && !map.hasImage('truck')) map.addImage('truck', img);
-  });
-  map.loadImage(`data:image/svg+xml;utf8,${squareSVG}`, (err, img) => {
-    if (!err && !map.hasImage('trailer')) map.addImage('trailer', img);
-  });
-  await refresh();
-});
+async function ensureImages() {
+  if (!map.hasImage('truck'))   map.addImage('truck',   makeTriangle(), { pixelRatio: 2 });
+  if (!map.hasImage('trailer')) map.addImage('trailer', makeSquare(),   { pixelRatio: 2 });
+}
 
+map.on('load', async () => { await ensureImages(); await refresh(); });
 document.getElementById('refresh').addEventListener('click', refresh);
 
 async function refresh() {
-  const res = await fetch('/api/pairs');
-  const data = await res.json();
-  const pairs = data?.pairs ?? [];
+  const r = await fetch('/api/pairs', { cache: 'no-store' });
+  const d = await r.json();
+  const pairs = d?.pairs ?? [];
 
-  // Build GeoJSON for trucks and trailers
-  const truckMap = {};
-  const truckFeatures = [];
-  const trailerFeatures = [];
-  const lines = [];
-
+  const trucksPts = [], trailersPts = [], lines = [], labelsTk = [], labelsTr = [];
   for (const p of pairs) {
-    const tr = p.trailer;
-    if (p.truck) truckMap[p.truck.id] = p.truck;
+    const tr = p.trailer, tk = p.truck;
+    const trId = String(p.trailerId ?? tr?.id ?? '');
+    const tkId = p.truckId != null ? String(p.truckId) : null;
 
     if (tr?.position) {
-      trailerFeatures.push({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [tr.position.lon, tr.position.lat] },
-        properties: { id: tr.id, status: p.status, label: `TR ${tr.id}` }
-      });
+      const c = [tr.position.lon, tr.position.lat];
+      trailersPts.push(pt(c)); labelsTr.push(pt(c, { label: `TR ${trId}` }));
     }
-
-    if (p.truck?.position) {
-      truckFeatures.push({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [p.truck.position.lon, p.truck.position.lat] },
-        properties: { id: p.truck.id, label: `TK ${p.truck.id}` }
-      });
-    }
-
-    if (p.truck?.position && tr?.position) {
-      lines.push({
-        type: 'Feature',
-        geometry: { type: 'LineString', coordinates: [
-          [p.truck.position.lon, p.truck.position.lat],
-          [tr.position.lon, tr.position.lat]
-        ]},
-        properties: { id: `${tr.id}-${p.truck.id}`, distance: p.distanceMiles }
-      });
+    if (tk?.position) {
+      const c = [tk.position.lon, tk.position.lat];
+      trucksPts.push(pt(c)); labelsTk.push(pt(c, { label: `TK ${tkId ?? ''}` }));
+      if (tr?.position) lines.push(ln([c, [tr.position.lon, tr.position.lat]]));
     }
   }
 
-  const trucks = { type: 'FeatureCollection', features: truckFeatures };
-  const trailers = { type: 'FeatureCollection', features: trailerFeatures };
-  const pairsLines = { type: 'FeatureCollection', features: lines };
+  setSrc('pair-lines', fc(lines));
+  setSrc('trucks-pts', fc(trucksPts));
+  setSrc('trailers-pts', fc(trailersPts));
+  setSrc('trucks-labels', fc(labelsTk));
+  setSrc('trailers-labels', fc(labelsTr));
 
-  // Update or add layers
-  setOrUpdate('trucks', trucks, 'truck');
-  setOrUpdate('trailers', trailers, 'trailer');
-  setOrUpdateLine('pair-lines', pairsLines);
+  addLayer('pair-lines-layer', { type:'line', source:'pair-lines', paint:{ 'line-width': 2 }});
+  addLayer('trucks-pts-layer', {
+    type:'symbol', source:'trucks-pts',
+    layout:{ 'icon-image':'truck', 'icon-size': 1.2, 'icon-allow-overlap': true, 'icon-ignore-placement': true }
+  });
+  addLayer('trailers-pts-layer', {
+    type:'symbol', source:'trailers-pts',
+    layout:{ 'icon-image':'trailer', 'icon-size': 1.2, 'icon-allow-overlap': true, 'icon-ignore-placement': true }
+  });
+  addLayer('trucks-labels-layer', {
+    type:'symbol', source:'trucks-labels',
+    layout:{ 'text-field':['get','label'], 'text-offset':[0,1.2], 'text-size':12, 'text-anchor':'top',
+             'text-allow-overlap': true, 'text-ignore-placement': true }
+  });
+  addLayer('trailers-labels-layer', {
+    type:'symbol', source:'trailers-labels',
+    layout:{ 'text-field':['get','label'], 'text-offset':[0,1.2], 'text-size':12, 'text-anchor':'top',
+             'text-allow-overlap': true, 'text-ignore-placement': true }
+  });
 
-  // Sidebar list
+  renderList(pairs);
+}
+
+// ====== список ======
+function renderList(pairs){
   const list = document.getElementById('pairs');
   list.innerHTML = '';
+  if (!pairs.length) { list.innerHTML = `<li class="pair"><div class="title">Нет данных</div><div class="meta">Проверьте /api/health</div></li>`; return; }
   for (const p of pairs) {
-    const li = document.createElement('li');
-    li.className = 'pair';
-    const title = document.createElement('div');
-    title.className = 'title';
-    title.textContent = p.truck
-      ? `Trailer ${p.trailerId} ▸ Truck ${p.truckId}`
-      : `Trailer ${p.trailerId} ▸ ${p.status}`;
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.textContent = p.distanceMiles != null ? `${p.distanceMiles} mi` : '';
-    li.appendChild(title);
-    li.appendChild(meta);
-    li.addEventListener('click', () => {
-      if (p.truck?.position && p.trailer?.position) {
-        const bounds = new maplibregl.LngLatBounds();
-        bounds.extend([p.truck.position.lon, p.truck.position.lat]);
-        bounds.extend([p.trailer.position.lon, p.trailer.position.lat]);
-        map.fitBounds(bounds, { padding: 60, maxZoom: 12 });
-      } else if (p.trailer?.position) {
-        map.flyTo({ center: [p.trailer.position.lon, p.trailer.position.lat], zoom: 12 });
-      }
-    });
-    list.appendChild(li);
+    const li = document.createElement('li'); li.className='pair';
+    const t = document.createElement('div'); t.className='title';
+    t.textContent = p.truck ? `Trailer ${p.trailerId} ▸ Truck ${p.truckId}` : `Trailer ${p.trailerId} ▸ ${p.status || 'no_truck_available'}`;
+    const m = document.createElement('div'); m.className='meta'; m.textContent = p.distanceMiles!=null ? `${p.distanceMiles} mi` : '';
+    li.appendChild(t); li.appendChild(m); list.appendChild(li);
   }
 }
 
-function setOrUpdate(id, data, imageName) {
-  if (map.getSource(id)) {
-    map.getSource(id).setData(data);
-  } else {
-    map.addSource(id, { type: 'geojson', data });
-    map.addLayer({
-      id: id,
-      type: 'symbol',
-      source: id,
-      layout: {
-        'icon-image': imageName,
-        'icon-size': 1,
-        'icon-allow-overlap': true,
-        'text-field': ['get', 'label'],
-        'text-offset': [0, 1.2],
-        'text-size': 10,
-        'text-anchor': 'top'
-      }
-    });
-  }
-}
-
-function setOrUpdateLine(id, data) {
-  if (map.getSource(id)) {
-    map.getSource(id).setData(data);
-  } else {
-    map.addSource(id, { type: 'geojson', data });
-    map.addLayer({
-      id: id,
-      type: 'line',
-      source: id,
-      paint: { 'line-width': 2 }
-    });
-  }
-}
-
-// Auto-refresh every 90s
-setInterval(refresh, 90000);
+// ====== geojson helpers / layers ======
+function pt(c,p){ return {type:'Feature', geometry:{type:'Point', coordinates:c}, properties:p||{}} }
+function ln(c){ return {type:'Feature', geometry:{type:'LineString', coordinates:c}, properties:{}} }
+function fc(f){ return {type:'FeatureCollection', features:f} }
+function setSrc(id,data){ if (map.getSource(id)) map.getSource(id).setData(data); else map.addSource(id,{type:'geojson',data}); }
+function addLayer(id,def){ if (map.getLayer(id)) { if (def.layout) for (const k in def.layout) map.setLayoutProperty(id,k,def.layout[k]); if (def.paint) for (const k in def.paint) map.setPaintProperty(id,k,def.paint[k]); } else { map.addLayer(Object.assign({id},def)); } }
