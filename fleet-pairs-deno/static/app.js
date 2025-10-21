@@ -70,20 +70,26 @@ async function refresh() {
 
 // ——— маркеры как DOM ———
 function renderMarkers(pool, coordsList, svg) {
-  // скрыть старые
+  // убрать старые
   for (const m of pool) m.remove();
   pool.length = 0;
+
   for (const c of coordsList) {
     const el = document.createElement('div');
     el.style.width = '30px';
     el.style.height = '30px';
-    el.style.transform = 'translate(-50%, -50%)';
+    // ВАЖНО: НЕ делаем translate(-50%,-50%) — MapLibre уже центрирует маркер
     el.style.pointerEvents = 'none';
+    el.style.zIndex = '2';
     el.innerHTML = svg;
-    const mk = new maplibregl.Marker({ element: el }).setLngLat(c).addTo(map);
+
+    const mk = new maplibregl.Marker({ element: el, anchor: 'center' })
+      .setLngLat(c)
+      .addTo(map);
     pool.push(mk);
   }
 }
+
 
 // ——— список ———
 function renderList(pairs) {
