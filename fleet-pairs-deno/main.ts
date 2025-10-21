@@ -8,7 +8,7 @@ type Truck = { id: string; position?: LatLon; lastSeen?: string };
 type Trailer = { id: string; position?: LatLon; lastSeen?: string };
 type Pair = {
   trailerId: string;
-  truckId: string | null; // null => yard-solo или нет доступных траков
+  truckId: string | null;
   distanceMiles: number | null;
   trailer: Trailer;
   truck: Truck | null;
@@ -50,13 +50,10 @@ async function computeAndPersistPairs() {
 
 // Deno Deploy Cron (every 10 minutes)
 try {
-  // Requires Deploy cron enabled in the project UI
   (Deno as any).cron?.("compute pairs", "*/10 * * * *", async () => {
     await computeAndPersistPairs();
   });
-} catch {
-  // ignore if not supported locally
-}
+} catch {}
 
 // HTTP server
 serve(async (req) => {
@@ -72,16 +69,13 @@ serve(async (req) => {
 
   if (pathname === "/api/pairs") {
     const val = await kv.get(["pairs", "current"]);
-    if (!val.value) {
-      await computeAndPersistPairs();
-    }
+    if (!val.value) await computeAndPersistPairs();
     const latest = await kv.get(["pairs", "current"]);
     return new Response(JSON.stringify(latest.value ?? {}), {
       headers: { "content-type": "application/json" },
     });
   }
 
-  // Static files under /static/*
   if (pathname.startsWith("/static/")) {
     const filePath = "." + pathname;
     try {
@@ -100,7 +94,6 @@ serve(async (req) => {
     }
   }
 
-  // Root -> index.html
   try {
     const file = await Deno.readFile("./static/index.html");
     return new Response(file, {
