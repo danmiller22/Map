@@ -1,0 +1,12 @@
+{
+  "tasks": {
+    "dev": "deno run -A --watch=static/,lib/ main.ts"
+  },
+  "lint": {
+    "rules": {
+      "exclude": [
+        "no-window-prefix"
+      ]
+    }
+  }
+}
