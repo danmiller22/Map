@@ -11,59 +11,25 @@ export function matchTrailersToNearestTruck(args: {
 }) {
   const { trucks, trailers, yard } = args;
 
-  // Helper to check yard geofence
-  const inYard = (p?: LatLon) => {
-    if (!p) return false;
-    return haversineMiles(p, yard) <= yard.radiusMi;
-  };
+  const inYard = (p?: LatLon) => p ? haversineMiles(p, yard) <= yard.radiusMi : false;
 
-  const pairs = trailers.map((tr) => {
+  return trailers.map((tr) => {
     if (!tr.position) {
-      return {
-        trailerId: tr.id,
-        truckId: null,
-        distanceMiles: null,
-        trailer: tr,
-        truck: null,
-        status: "unknown_trailer_position",
-      };
+      return { trailerId: tr.id, truckId: null, distanceMiles: null, trailer: tr, truck: null, status: "unknown_trailer_position" };
     }
-
-    // Yard solo exception
     if (inYard(tr.position)) {
-      return {
-        trailerId: tr.id,
-        truckId: null,
-        distanceMiles: 0,
-        trailer: tr,
-        truck: null,
-        status: "yard_solo",
-      };
+      return { trailerId: tr.id, truckId: null, distanceMiles: 0, trailer: tr, truck: null, status: "yard_solo" };
     }
-
-    // Find nearest truck
     let bestTruck: Truck | null = null;
     let bestDist = Number.POSITIVE_INFINITY;
     for (const tk of trucks) {
       if (!tk.position) continue;
       const d = haversineMiles(tr.position, tk.position);
-      if (d < bestDist) {
-        bestDist = d;
-        bestTruck = tk;
-      }
+      if (d < bestDist) { bestDist = d; bestTruck = tk; }
     }
-
     if (!bestTruck) {
-      return {
-        trailerId: tr.id,
-        truckId: null,
-        distanceMiles: null,
-        trailer: tr,
-        truck: null,
-        status: "no_truck_available",
-      };
+      return { trailerId: tr.id, truckId: null, distanceMiles: null, trailer: tr, truck: null, status: "no_truck_available" };
     }
-
     return {
       trailerId: tr.id,
       truckId: bestTruck.id,
@@ -73,6 +39,4 @@ export function matchTrailersToNearestTruck(args: {
       status: "paired",
     };
   });
-
-  return pairs;
 }
