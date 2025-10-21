@@ -1,4 +1,3 @@
-// Робастный маппинг Samsara /fleet/vehicles/locations
 type LatLon = { lat: number; lon: number };
 type Truck = { id: string; position?: LatLon; lastSeen?: string };
 
@@ -7,57 +6,56 @@ export async function fetchSamsaraVehicles(): Promise<Truck[]> {
   if (!token) return [];
 
   const url = new URL("https://api.samsara.com/fleet/vehicles/locations");
-  // повысим шанс полного списка
   url.searchParams.set("limit", "500");
 
   try {
     const resp = await fetch(url.toString(), {
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Accept": "application/json",
-      },
+      headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" },
     });
-    if (!resp.ok) {
-      console.error("[samsara] http", resp.status);
-      return [];
-    }
-    const j = await resp.json();
-    const rows = Array.isArray(j?.data) ? j.data : [];
+    if (!resp.ok) return [];
 
-    const out: Truck[] = rows.map((v: any) => {
+    const rows: any[] = Array.isArray((await resp.json())?.data) ? (await resp.json()).data : [];
+
+    const out: Truck[] = rows.map((v) => {
       const loc = v?.location ?? v?.lastKnownLocation ?? v?.gps ?? {};
-      // поддержка разных схем времени
-      const t = loc.time ?? loc.timeMs ?? loc.timestamp ?? null;
-      // разные поля ID
-      const id =
-        v?.id ??
-        v?.vehicleId ??
-        v?.externalIds?.vin ??
-        v?.vin ??
-        v?.name ??
-        crypto.randomUUID();
-
       const lat = loc.latitude ?? loc.lat ?? loc.coord?.lat;
       const lon = loc.longitude ?? loc.lon ?? loc.coord?.lon;
+      const t   = loc.time ?? loc.timeMs ?? loc.timestamp;
+
+      // источники имени/номера
+      const name =
+        v?.name ??
+        v?.vehicleNumber ??
+        v?.externalIds?.vehicleNumber ??
+        v?.externalIds?.unitNumber ??
+        v?.externalIds?.fleetNumber ??
+        v?.vin ??
+        String(v?.id ?? v?.vehicleId ?? "");
+
+      const short = pickShortNumber(name) ?? pickShortNumber(v?.vin) ?? lastDigits(v?.id ?? v?.vehicleId, 4) ?? "UNK";
 
       return {
-        id: String(id),
-        position:
-          lat != null && lon != null
-            ? { lat: Number(lat), lon: Number(lon) }
-            : undefined,
+        id: short, // используем короткий номер как публичный id
+        position: lat != null && lon != null ? { lat: Number(lat), lon: Number(lon) } : undefined,
         lastSeen: t ? new Date(Number.isFinite(t) ? Number(t) : t).toISOString() : undefined,
       };
-    });
+    }).filter((x) => x.position);
 
-    // Отфильтруем без координат
-    const havePos = out.filter((x) => x.position);
-    if (havePos.length === 0) {
-      console.warn("[samsara] no positions parsed; sample:", JSON.stringify(rows[0] ?? {}));
-    }
-    return havePos;
-  } catch (e) {
-    console.error("[samsara] fetch failed", String(e));
+    return out;
+  } catch {
     return [];
   }
+}
+
+// берём 3–4 подряд идущих цифры из строки (например "TK-1234", "Truck 987")
+function pickShortNumber(s: any): string | null {
+  if (!s) return null;
+  const m = String(s).match(/(\d{4}|\b\d{3}\b)(?!\d)/); // сначала 4, иначе 3
+  return m ? m[1] : null;
+}
+
+function lastDigits(x: any, n: number): string | null {
+  if (!x) return null;
+  const m = String(x).match(new RegExp(`(\\d{${n}})(?!\\d)`));
+  return m ? m[1] : null;
 }
