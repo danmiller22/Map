@@ -5,11 +5,9 @@ const map = new maplibregl.Map({
   zoom: 8
 });
 
-// SVG icons as data URLs
-const triangleSVG = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
-  <polygon points="12,3 21,21 3,21" fill="black"/></svg>`);
-const squareSVG = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
-  <rect x="3" y="3" width="18" height="18" fill="black"/></svg>`);
+// SVG icons
+const triangleSVG = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><polygon points="12,3 21,21 3,21"/></svg>`);
+const squareSVG = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect x="3" y="3" width="18" height="18"/></svg>`);
 
 map.on('load', async () => {
   map.loadImage(`data:image/svg+xml;utf8,${triangleSVG}`, (err, img) => {
@@ -28,54 +26,42 @@ async function refresh() {
   const data = await res.json();
   const pairs = data?.pairs ?? [];
 
-  // Build GeoJSON for trucks and trailers
-  const truckMap = {};
   const truckFeatures = [];
   const trailerFeatures = [];
   const lines = [];
 
   for (const p of pairs) {
     const tr = p.trailer;
-    if (p.truck) truckMap[p.truck.id] = p.truck;
-
     if (tr?.position) {
       trailerFeatures.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [tr.position.lon, tr.position.lat] },
-        properties: { id: tr.id, status: p.status, label: `TR ${tr.id}` }
+        properties: { id: tr.id, label: `TR ${tr.id}` }
       });
     }
-
     if (p.truck?.position) {
       truckFeatures.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p.truck.position.lon, p.truck.position.lat] },
         properties: { id: p.truck.id, label: `TK ${p.truck.id}` }
       });
-    }
-
-    if (p.truck?.position && tr?.position) {
-      lines.push({
-        type: 'Feature',
-        geometry: { type: 'LineString', coordinates: [
-          [p.truck.position.lon, p.truck.position.lat],
-          [tr.position.lon, tr.position.lat]
-        ]},
-        properties: { id: `${tr.id}-${p.truck.id}`, distance: p.distanceMiles }
-      });
+      if (tr?.position) {
+        lines.push({
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: [
+            [p.truck.position.lon, p.truck.position.lat],
+            [tr.position.lon, tr.position.lat]
+          ]},
+          properties: { id: `${tr.id}-${p.truck.id}`, distance: p.distanceMiles }
+        });
+      }
     }
   }
 
-  const trucks = { type: 'FeatureCollection', features: truckFeatures };
-  const trailers = { type: 'FeatureCollection', features: trailerFeatures };
-  const pairsLines = { type: 'FeatureCollection', features: lines };
+  setOrUpdate('trucks', { type: 'FeatureCollection', features: truckFeatures }, 'truck');
+  setOrUpdate('trailers', { type: 'FeatureCollection', features: trailerFeatures }, 'trailer');
+  setOrUpdateLine('pair-lines', { type: 'FeatureCollection', features: lines });
 
-  // Update or add layers
-  setOrUpdate('trucks', trucks, 'truck');
-  setOrUpdate('trailers', trailers, 'trailer');
-  setOrUpdateLine('pair-lines', pairsLines);
-
-  // Sidebar list
   const list = document.getElementById('pairs');
   list.innerHTML = '';
   for (const p of pairs) {
@@ -85,7 +71,7 @@ async function refresh() {
     title.className = 'title';
     title.textContent = p.truck
       ? `Trailer ${p.trailerId} ▸ Truck ${p.truckId}`
-      : `Trailer ${p.trailerId} ▸ ${p.status}`;
+      : `Trailer ${p.trailerId} ▸ ${p.status || 'no_truck_available'}`;
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = p.distanceMiles != null ? `${p.distanceMiles} mi` : '';
@@ -141,5 +127,4 @@ function setOrUpdateLine(id, data) {
   }
 }
 
-// Auto-refresh every 90s
 setInterval(refresh, 90000);
